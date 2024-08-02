@@ -1,0 +1,246 @@
+#include <ArduinoSTL.h>
+ 
+#include <vector>
+#include <map>
+const int line_0_pin = 9;
+const int line_1_pin = 8;
+const int line_2_pin = 7;
+const int line_3_pin = 6;
+const int mark_pin = 5;
+
+bool line_0_flag = false;
+bool line_1_flag = false;
+bool line_2_flag = false;
+bool line_3_flag = false;
+bool mark_flag = false;
+
+uint32_t line_0_Timer = 0;
+uint32_t line_1_Timer = 0;
+uint32_t line_2_Timer = 0;
+uint32_t line_3_Timer = 0;
+uint32_t mark_Timer = 0;
+
+const int line_delay = 200;
+const int request_timeout = 1000;
+
+int s_code = 0;
+bool mark = false;
+
+class Marker {
+    void write_to_marker(String message) {
+        Serial.print(message + ";;");
+    }
+ 
+    String read_from_marker() {
+        uint32_t start_time = millis();
+        while (!Serial.available()) {
+          if (start_time+request_timeout>=millis()) {
+            return "";
+          }
+          delay(100);
+          }
+        String ans;
+        bool not_end = true;
+        while (not_end) {
+            String buf1 = Serial.readStringUntil(';');
+            ans += buf1 + ';';
+            not_end = buf1.length() > 0;
+        }
+        ans.remove(ans.length() - 2, 2);
+        return ans;
+    }
+ 
+    std::vector<String> separate(String to_separate, char separator) {
+        std::vector<String> ans;
+        String buf;
+        for (char sym : to_separate) {
+            if (sym == separator) {
+                ans.push_back(buf);
+                buf = "";
+            } else {
+                buf += sym;
+            }
+        }
+        if (buf.length() > 0) {
+            ans.push_back(buf);
+        }
+        return ans;
+    }
+public:
+    Marker() {
+        Serial.begin(9600);
+    }
+    ~Marker() {
+        Serial.end();
+    }
+ 
+ 
+    String open(String file) {
+        write_to_marker(String("OpenDoc,") + file);
+        delay(500);
+        return read_from_marker();
+    }
+ 
+    String set_pen_settings(int pen_id, int mark_speed, int power) {
+        write_to_marker(String("SetPen,ID") + pen_id + ";MarkSpeed," + mark_speed + ";Power," + power);
+        return read_from_marker();
+    }
+ 
+    String mark() {
+        write_to_marker("StartMark");
+        delay(500);
+        return read_from_marker();
+    }
+    String stopmark() {
+        write_to_marker("StopMark");
+        delay(500);
+        return read_from_marker();
+    }
+ 
+    std::map<String, double> get_shape_pos(String primitive_name) {
+        write_to_marker(String("GetShapePos,") + primitive_name);
+        auto data = separate(read_from_marker(), ';');
+        using namespace std;
+        std::map<String, double> ans
+                {
+                        { "x"      , data[1].toDouble() },
+                        { "y"      , data[2].toDouble() },
+                        { "height" , data[3].toDouble() },
+                        { "width"  , data[4].toDouble() }
+                };
+        return ans;
+    }
+ 
+    String set_shape(String primitive, String content, double x = 0., double y = 0., bool pos_type = false) {
+        write_to_marker(String("SetShapeData,") + primitive + "," + content + "," + x + "," + y + "," + pos_type);
+        return read_from_marker();
+    }
+ 
+    String save() {
+        write_to_marker("SaveCurrentDoc");
+        return read_from_marker();
+    }
+ 
+    String change_content(String content) {
+        String err;
+        write_to_marker("GetShapeList");
+        std::vector<String> primitives(separate(read_from_marker(), ';'));
+        for (String prim : primitives) {
+ 
+          Serial.print(prim + "\n");
+ 
+            auto was = get_shape_pos(prim);
+            write_to_marker(String("SetShapeData,") + prim + "," + content);
+            err = read_from_marker();
+            if (err != "Ok") return err;
+            auto is = get_shape_pos(prim);
+            double x_offset = (was["x"] + was["width"] / 2) - (is["x"] + is["width"] / 2);
+            double y_offset = (was["y"] + was["height"] / 2) - (is["y"] + is["height"] / 2);
+            err = set_shape(prim, "", x_offset, y_offset);
+            if (err != "Ok") return err;
+        }
+        return err;
+    }
+};
+
+
+String bpd_name(){
+  String result = String(s_code);
+  if (s_code<10){
+    result = "0"+result;
+  }  
+  result = result+".bpd";
+  return result;
+}
+
+
+void setup() {
+  Serial.begin(9600);
+ 
+  pinMode(line_0_pin, INPUT_PULLUP);
+  pinMode(line_1_pin, INPUT_PULLUP);
+  pinMode(line_2_pin, INPUT_PULLUP);
+  pinMode(line_3_pin, INPUT_PULLUP);
+  pinMode(mark_pin, INPUT_PULLUP);
+
+  Serial.print("start;;");;
+
+}
+void loop() {
+  bool line_0_State = !digitalRead(line_0_pin);
+  bool line_1_State = !digitalRead(line_1_pin);
+  bool line_2_State = !digitalRead(line_2_pin);
+  bool line_3_State = !digitalRead(line_3_pin);
+  bool mark_State = !digitalRead(mark_pin);
+ 
+  if (line_0_State && !line_0_flag && millis() - line_0_Timer > line_delay) {
+    //Вход 0
+    line_0_flag = true;
+    line_0_Timer = millis();
+  } 
+  if (line_1_State && !line_1_flag && millis() - line_1_Timer > line_delay) {
+    //Вход 1
+    line_1_flag = true;
+    line_1_Timer = millis();
+  } 
+  if (line_2_State && !line_2_flag && millis() - line_2_Timer > line_delay) {
+    //Вход 2
+    line_2_flag = true;
+    line_2_Timer = millis();
+  } 
+  if (line_3_State && !line_3_flag && millis() - line_3_Timer > line_delay) {
+    //Вход 3
+    line_3_flag = true;
+    line_3_Timer = millis();
+  } 
+  if (mark_State && !mark_flag && millis() - mark_Timer > line_delay) {
+    //Вход начала маркировки
+    mark_flag = true;
+    mark_Timer = millis();
+    if (!mark) {
+      if (line_0_flag) {s_code |= (1 << 0);}
+      else {s_code &= ~(1 << 0);}
+      if (line_1_flag) {s_code |= (1 << 1);}
+      else {s_code &= ~(1 << 1);}
+      if (line_2_flag) {s_code |= (1 << 2);}
+      else {s_code &= ~(1 << 2);}
+      if (line_3_flag) {s_code |= (1 << 3);}
+      else {s_code &= ~(1 << 3);}
+
+      Marker m;
+      m.stopmark();
+
+      String resp = m.open(bpd_name());
+      while (!(resp="Ok;;")) {
+        delay(100);
+        resp = m.open(bpd_name());
+      }
+      m.mark();
+      mark = true;
+    }
+
+  } 
+
+ if (!line_0_State && line_0_flag && millis() - line_0_Timer > line_delay) {
+    line_0_flag = false;
+    line_0_Timer = millis();
+   }
+ if (!line_1_State && line_1_flag && millis() - line_1_Timer > line_delay) {
+    line_1_flag = false;
+    line_1_Timer = millis();
+   }
+ if (!line_2_State && line_2_flag && millis() - line_2_Timer > line_delay) {
+    line_2_flag = false;
+    line_2_Timer = millis();
+   }
+ if (!line_3_State && line_3_flag && millis() - line_3_Timer > line_delay) {
+    line_3_flag = false;
+    line_3_Timer = millis();
+   }
+ if (!mark_State && mark_flag && millis() - mark_Timer > line_delay) {
+    mark_flag = false;
+    mark_Timer = millis();
+    mark = false;
+  }
+
+}
