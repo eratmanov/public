@@ -1,0 +1,257 @@
+#include <ArduinoSTL.h>
+
+const int kLine0Pin = 9;
+const int kLine1Pin = 8;
+const int kLine2Pin = 7;
+const int kLine3Pin = 6;
+const int kMarkPin = 5;
+
+const int kLineDelay = 200;
+const int kRequestTimeout = 1000;
+const int kMinQueriesPeriod = 500;
+
+int s_code = 0;
+
+String operator""_s(const char *s, unsigned /*len*/) {
+    return s;
+}
+
+class Marker {
+public:
+    Marker() {
+        Serial.begin(9600);
+        WriteToMarker("start");
+    }
+
+    ~Marker() {
+        Serial.end();
+    }
+
+
+    void Open(const String &file) {
+        ProcessCommand("OpenDoc,"_s + file);
+    }
+
+    void SetPenSettings(int pen_id, int mark_speed, int power) {
+        ProcessCommand("SetPen,ID"_s + pen_id + ";MarkSpeed,"_s + mark_speed + ";Power,"_s + power);
+    }
+
+    void Mark() {
+        ProcessCommand("StartMark");
+    }
+
+    void StopMark() {
+        SendCommand("StopMark");
+    }
+
+    struct ShapePosition {
+        double x;
+        double y;
+        double height;
+        double width;
+    };
+
+
+    ShapePosition GetShapePos(const String &primitive_name) {
+        WriteToMarker("GetShapePos,"_s + primitive_name);
+        auto data = Separate(ReadFromMarker(), ';');
+        return {
+                .x = data[1].toDouble(),
+                .y = data[2].toDouble(),
+                .height = data[3].toDouble(),
+                .width = data[4].toDouble()
+        };
+    }
+
+    void SetShape(const String &primitive, const String &content, double x = 0., double y = 0., bool pos_type = false) {
+        ProcessCommand("SetShapeData,"_s + primitive + ","_s + content + ","_s + x + ","_s + y + ","_s + pos_type);
+    }
+
+    void Save() {
+        ProcessCommand("SaveCurrentDoc");
+    }
+
+    void ChangeContent(const String &content) {
+        WriteToMarker("GetShapeList");
+        std::vector<String> primitives(Separate(ReadFromMarker(), ';'));
+        for (const String &prim : primitives) {
+            auto was = GetShapePos(prim);
+            // FIXME: should use Marker::SetShapeData
+            ProcessCommand("SetShapeData,"_s + prim + "," + content);
+            auto is = GetShapePos(prim);
+            double x_offset = (was.x + was.width / 2) - (is.x + is.width / 2);
+            double y_offset = (was.y + was.height / 2) - (is.y + is.height / 2);
+            SetShape(prim, "", x_offset, y_offset);
+        }
+    }
+
+public:
+    void WriteToMarker(String message) {
+        static uint32_t previous_command_time = 0;
+        if (previous_command_time + kMinQueriesPeriod > millis()) {
+            delay(kMinQueriesPeriod - (millis() - previous_command_time));
+        }
+        message += ";;";
+        Serial.print(message);
+    }
+
+    String ReadFromMarker() {
+        for (int time_gone = 0; !Serial.available(); time_gone += 100) {
+            if (time_gone >= kRequestTimeout) {
+                return "Error";
+            }
+            delay(100);
+        }
+        String ans;
+        {
+            String buf;
+            do {
+                buf = Serial.readStringUntil(';');
+                ans += buf + ';';
+            } while (buf.length() > 0);
+        }
+        ans.remove(ans.length() - 2, 2);
+        return ans;
+    }
+
+    void SendCommand(const String &command) {
+        do {
+            WriteToMarker(command);
+        } while (ReadFromMarker() != "Ok");
+    }
+
+    bool TrySendCommand(const String &command) {
+        WriteToMarker(command);
+        return ReadFromMarker() == "Ok";
+    }
+
+    void ProcessCommand(const String &command) {
+        if (TrySendCommand(command)) return;
+        StopMark();
+        SendCommand(command);
+    }
+
+    std::vector<String> Separate(const String &to_separate, char separator) {
+        std::vector<String> ans;
+        String buf;
+        for (char sym : to_separate) {
+            if (sym == separator) {
+                ans.push_back(buf);
+                buf = "";
+            } else {
+                buf += sym;
+            }
+        }
+        if (buf.length() > 0) {
+            ans.push_back(buf);
+        }
+        return ans;
+    }
+};
+
+
+String bpd_name(){
+    String result(s_code);
+    if (s_code < 10){
+        result = "0" + result;
+    }
+    result = result + ".bpd";
+    return result;
+}
+
+void setup() {
+    pinMode(kLine0Pin, INPUT_PULLUP);
+    pinMode(kLine1Pin, INPUT_PULLUP);
+    pinMode(kLine2Pin, INPUT_PULLUP);
+    pinMode(kLine3Pin, INPUT_PULLUP);
+    pinMode(kMarkPin, INPUT_PULLUP);
+}
+
+void loop() {
+    static Marker m;
+
+    static bool line_0_flag = false;
+    static bool line_1_flag = false;
+    static bool line_2_flag = false;
+    static bool line_3_flag = false;
+    static bool mark_flag = false;
+
+    static uint32_t line_0_Timer = 0;
+    static uint32_t line_1_Timer = 0;
+    static uint32_t line_2_Timer = 0;
+    static uint32_t line_3_Timer = 0;
+    static uint32_t mark_Timer = 0;
+
+    static bool mark = false;
+
+    bool line_0_State = !digitalRead(kLine0Pin);
+    bool line_1_State = !digitalRead(kLine1Pin);
+    bool line_2_State = !digitalRead(kLine2Pin);
+    bool line_3_State = !digitalRead(kLine3Pin);
+    bool mark_State = !digitalRead(kMarkPin);
+
+
+    if (line_0_State && !line_0_flag && millis() - line_0_Timer > kLineDelay) {
+        //Вход 0
+        line_0_flag = true;
+        line_0_Timer = millis();
+    }
+    if (line_1_State && !line_1_flag && millis() - line_1_Timer > kLineDelay) {
+        //Вход 1
+        line_1_flag = true;
+        line_1_Timer = millis();
+    }
+    if (line_2_State && !line_2_flag && millis() - line_2_Timer > kLineDelay) {
+        //Вход 2
+        line_2_flag = true;
+        line_2_Timer = millis();
+    }
+    if (line_3_State && !line_3_flag && millis() - line_3_Timer > kLineDelay) {
+        //Вход 3
+        line_3_flag = true;
+        line_3_Timer = millis();
+    }
+    if (mark_State && !mark_flag && millis() - mark_Timer > kLineDelay) {
+        //Вход начала маркировки
+        mark_flag = true;
+        mark_Timer = millis();
+        if (!mark) {
+            if (line_0_flag) {s_code |= (1 << 0);}
+            else {s_code &= ~(1 << 0);}
+            if (line_1_flag) {s_code |= (1 << 1);}
+            else {s_code &= ~(1 << 1);}
+            if (line_2_flag) {s_code |= (1 << 2);}
+            else {s_code &= ~(1 << 2);}
+            if (line_3_flag) {s_code |= (1 << 3);}
+            else {s_code &= ~(1 << 3);}
+
+            m.StopMark();
+            m.Open(bpd_name());
+            m.Mark();
+            mark = true;
+        }
+
+    }
+
+    if (!line_0_State && line_0_flag && millis() - line_0_Timer > kLineDelay) {
+        line_0_flag = false;
+        line_0_Timer = millis();
+    }
+    if (!line_1_State && line_1_flag && millis() - line_1_Timer > kLineDelay) {
+        line_1_flag = false;
+        line_1_Timer = millis();
+    }
+    if (!line_2_State && line_2_flag && millis() - line_2_Timer > kLineDelay) {
+        line_2_flag = false;
+        line_2_Timer = millis();
+    }
+    if (!line_3_State && line_3_flag && millis() - line_3_Timer > kLineDelay) {
+        line_3_flag = false;
+        line_3_Timer = millis();
+    }
+    if (!mark_State && mark_flag && millis() - mark_Timer > kLineDelay) {
+        mark_flag = false;
+        mark_Timer = millis();
+        mark = false;
+    }
+}
