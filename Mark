@@ -1,104 +1,101 @@
 #include <ArduinoSTL.h>
- 
+
 const int kLine0Pin = 9;
 const int kLine1Pin = 8;
 const int kLine2Pin = 7;
 const int kLine3Pin = 6;
 const int kMarkPin = 5;
- 
+
 const int kLineDelay = 200;
 const int kRequestTimeout = 1000;
- 
+const int kMinQueriesPeriod = 500;
+
 int s_code = 0;
-bool mark = false;
- 
-String operator""_s(const char *s, unsigned len) {
+
+String operator""_s(const char *s, unsigned /*len*/) {
     return s;
 }
- 
+
 class Marker {
 public:
     Marker() {
         Serial.begin(9600);
         WriteToMarker("start");
     }
- 
+
     ~Marker() {
         Serial.end();
     }
- 
- 
-    void Open(String file) {
-        SendCommand("OpenDoc,"_s + file);
+
+
+    void Open(const String &file) {
+        ProcessCommand("OpenDoc,"_s + file);
     }
- 
+
     void SetPenSettings(int pen_id, int mark_speed, int power) {
-        SendCommand("SetPen,ID"_s + pen_id + ";MarkSpeed,"_s + mark_speed + ";Power,"_s + power);
+        ProcessCommand("SetPen,ID"_s + pen_id + ";MarkSpeed,"_s + mark_speed + ";Power,"_s + power);
     }
- 
+
     void Mark() {
-        SendCommand("StartMark");
+        ProcessCommand("StartMark");
     }
- 
+
     void StopMark() {
         SendCommand("StopMark");
+        ReadFromMarker();
     }
- 
+
     struct ShapePosition {
         double x;
         double y;
         double height;
         double width;
     };
- 
- 
-    ShapePosition GetShapePos(String primitive_name) {
+
+
+    ShapePosition GetShapePos(const String &primitive_name) {
         WriteToMarker("GetShapePos,"_s + primitive_name);
         auto data = Separate(ReadFromMarker(), ';');
         return {
-            .x = data[1].toDouble(),
-            .y = data[2].toDouble(),
-            .height = data[3].toDouble(),
-            .width = data[4].toDouble()
+                .x = data[1].toDouble(),
+                .y = data[2].toDouble(),
+                .height = data[3].toDouble(),
+                .width = data[4].toDouble()
         };
     }
- 
-    void SetShape(String primitive, String content, double x = 0., double y = 0., bool pos_type = false) {
-        SendCommand("SetShapeData,"_s + primitive + ","_s + content + ","_s + x + ","_s + y + ","_s + pos_type);
+
+    void SetShape(const String &primitive, const String &content, double x = 0., double y = 0., bool pos_type = false) {
+        ProcessCommand("SetShapeData,"_s + primitive + ","_s + content + ","_s + x + ","_s + y + ","_s + pos_type);
     }
- 
+
     void Save() {
-        SendCommand("SaveCurrentDoc");
+        ProcessCommand("SaveCurrentDoc");
     }
- 
-    void ChangeContent(String content) {
+
+    void ChangeContent(const String &content) {
         WriteToMarker("GetShapeList");
         std::vector<String> primitives(Separate(ReadFromMarker(), ';'));
-        for (String prim : primitives) {
-            // FIXME Why???
-            Serial.print(prim + "\n");
- 
+        for (const String &prim : primitives) {
             auto was = GetShapePos(prim);
-            // FIXME
-            SendCommand("SetShapeData,"_s + prim + "," + content);
+            // FIXME: should use Marker::SetShapeData
+            ProcessCommand("SetShapeData,"_s + prim + "," + content);
             auto is = GetShapePos(prim);
             double x_offset = (was.x + was.width / 2) - (is.x + is.width / 2);
             double y_offset = (was.y + was.height / 2) - (is.y + is.height / 2);
             SetShape(prim, "", x_offset, y_offset);
         }
     }
- 
+
 public:
     void WriteToMarker(String message) {
-        static const uint32_t min_queries_period = 100;
         static uint32_t previous_command_time = 0;
-        if (previous_command_time + min_queries_period > millis()) {
-            delay(min_queries_period - (millis() - previous_command_time));
+        if (previous_command_time + kMinQueriesPeriod > millis()) {
+            delay(kMinQueriesPeriod - (millis() - previous_command_time));
         }
         message += ";;";
         Serial.print(message);
     }
- 
+
     String ReadFromMarker() {
         for (int time_gone = 0; !Serial.available(); time_gone += 100) {
             if (time_gone >= kRequestTimeout) {
@@ -117,25 +114,32 @@ public:
         ans.remove(ans.length() - 2, 2);
         return ans;
     }
-    void ClearBuf(){
-      while (Serial.available()){
-        Serial.readStringUntil(';');
-      }
-    }
- 
-    void SendCommand(String command) {
-      ClearBuf();
+
+    void SendCommand(const String &command) {
         do {
             WriteToMarker("StopMark");
             delay(100);
-        } while (ReadFromMarker() != "Ok");
-        do {
+            ReadFromMarker();
             WriteToMarker(command);
             delay(100);
         } while (ReadFromMarker() != "Ok");
     }
- 
-    std::vector<String> Separate(String to_separate, char separator) {
+
+    bool TrySendCommand(const String &command) {
+        WriteToMarker(command);
+        delay(100);
+        return ReadFromMarker() == "Ok";
+    }
+
+    void ProcessCommand(const String &command) {
+        if (TrySendCommand(command)) return;
+        StopMark();
+        
+        delay(100);
+        SendCommand(command);
+    }
+
+    std::vector<String> Separate(const String &to_separate, char separator) {
         std::vector<String> ans;
         String buf;
         for (char sym : to_separate) {
@@ -152,8 +156,8 @@ public:
         return ans;
     }
 };
- 
- 
+
+
 String bpd_name(){
     String result(s_code);
     if (s_code < 10){
@@ -162,7 +166,7 @@ String bpd_name(){
     result = result + ".bpd";
     return result;
 }
- 
+
 void setup() {
     pinMode(kLine0Pin, INPUT_PULLUP);
     pinMode(kLine1Pin, INPUT_PULLUP);
@@ -170,28 +174,31 @@ void setup() {
     pinMode(kLine3Pin, INPUT_PULLUP);
     pinMode(kMarkPin, INPUT_PULLUP);
 }
- 
+
 void loop() {
     static Marker m;
-    
+
     static bool line_0_flag = false;
     static bool line_1_flag = false;
     static bool line_2_flag = false;
     static bool line_3_flag = false;
     static bool mark_flag = false;
- 
+
     static uint32_t line_0_Timer = 0;
     static uint32_t line_1_Timer = 0;
     static uint32_t line_2_Timer = 0;
     static uint32_t line_3_Timer = 0;
     static uint32_t mark_Timer = 0;
- 
+
+    static bool mark = false;
+
     bool line_0_State = !digitalRead(kLine0Pin);
     bool line_1_State = !digitalRead(kLine1Pin);
     bool line_2_State = !digitalRead(kLine2Pin);
     bool line_3_State = !digitalRead(kLine3Pin);
     bool mark_State = !digitalRead(kMarkPin);
- 
+
+
     if (line_0_State && !line_0_flag && millis() - line_0_Timer > kLineDelay) {
         //Вход 0
         line_0_flag = true;
@@ -225,17 +232,17 @@ void loop() {
             else {s_code &= ~(1 << 2);}
             if (line_3_flag) {s_code |= (1 << 3);}
             else {s_code &= ~(1 << 3);}
- 
-//            m.StopMark();
- //           delay(100);
+
+            m.StopMark();
+            delay(100);
             m.Open(bpd_name());
             delay(100);
             m.Mark();
             mark = true;
         }
- 
+
     }
- 
+
     if (!line_0_State && line_0_flag && millis() - line_0_Timer > kLineDelay) {
         line_0_flag = false;
         line_0_Timer = millis();
