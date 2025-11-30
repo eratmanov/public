@@ -9,6 +9,9 @@ const int kMarkPin = 5;
 const int kLineDelay = 200;
 const int kRequestTimeout = 1000;
 const int kMinQueriesPeriod = 500;
+const int kCmdDelay = 50;
+
+const bool debug = false;
 
 int s_code = 0;
 
@@ -20,7 +23,7 @@ class Marker {
 public:
     Marker() {
         Serial.begin(9600);
-        WriteToMarker("start");
+        WriteToMarker("Control unit init. FW:1.3.0");
     }
 
     ~Marker() {
@@ -41,7 +44,14 @@ public:
     }
 
     void StopMark() {
-        SendCommand("StopMark");
+        if (debug) {
+          WriteToMarker("Debug: StopMark");
+          }
+        WriteToMarker("StopMark");
+        delay(kCmdDelay);
+        ReadFromMarker();
+        //ProcessCommand("StopMark");
+        //delay(kCmdDelay);
     }
 
     struct ShapePosition {
@@ -91,7 +101,7 @@ public:
         if (previous_command_time + kMinQueriesPeriod > millis()) {
             delay(kMinQueriesPeriod - (millis() - previous_command_time));
         }
-        message += ";;";
+        message += ";;\r\n";
         Serial.print(message);
     }
 
@@ -100,7 +110,7 @@ public:
             if (time_gone >= kRequestTimeout) {
                 return "Error";
             }
-            delay(100);
+            delay(kCmdDelay);
         }
         String ans;
         {
@@ -111,23 +121,46 @@ public:
             } while (buf.length() > 0);
         }
         ans.remove(ans.length() - 2, 2);
+        if (debug) {
+            String mon;
+            mon="Received: _"+ans+"_";
+            WriteToMarker(mon);
+            }
         return ans;
     }
 
     void SendCommand(const String &command) {
+        if (debug) {
+          WriteToMarker("Debug: SendCommand "+command);
+          }
+        
+        if (TrySendCommand(command)) return;
+        
         do {
-            WriteToMarker(command);
+            if (TrySendCommand(command)) return;
+            delay(kCmdDelay);
+            StopMark();
+            delay(kCmdDelay);
         } while (ReadFromMarker() != "Ok");
     }
 
     bool TrySendCommand(const String &command) {
+        if (debug) {
+          WriteToMarker("Debug: TrySendCommand "+command);
+          }
         WriteToMarker(command);
+        delay(kCmdDelay);
         return ReadFromMarker() == "Ok";
     }
 
     void ProcessCommand(const String &command) {
+        if (debug) {
+          WriteToMarker("Debug: ProcessCommand "+command);
+          }
         if (TrySendCommand(command)) return;
         StopMark();
+        
+        delay(kCmdDelay);
         SendCommand(command);
     }
 
@@ -226,7 +259,9 @@ void loop() {
             else {s_code &= ~(1 << 3);}
 
             m.StopMark();
+            delay(kCmdDelay);
             m.Open(bpd_name());
+            delay(kCmdDelay);
             m.Mark();
             mark = true;
         }
